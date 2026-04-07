@@ -5,6 +5,7 @@ use std::{
     fmt::{self, Write},
     process,
     str::FromStr,
+    time::Duration,
 };
 
 use getopts::Options;
@@ -119,8 +120,8 @@ impl Default for Filter {
 pub struct Cli {
     pub masters: Vec<Box<str>>,
     pub args: Vec<String>,
-    pub master_timeout: u32,
-    pub server_timeout: u32,
+    pub master_timeout: Duration,
+    pub server_timeout: Duration,
     pub protocol: Vec<u8>,
     pub json: bool,
     pub debug: bool,
@@ -138,8 +139,8 @@ impl Default for Cli {
                 .map(|i| i.to_string().into_boxed_str())
                 .collect(),
             args: Default::default(),
-            master_timeout: 2,
-            server_timeout: 2,
+            master_timeout: Duration::from_secs(2),
+            server_timeout: Duration::from_secs(2),
             protocol: vec![proto::PROTOCOL_VERSION, proto::PROTOCOL_VERSION - 1],
             json: false,
             debug: false,
@@ -159,7 +160,7 @@ COMMANDS:
     all                 fetch servers from all masters and fetch info for each server
     info hosts...       fetch info for each server
     list                fetch servers from all masters and print server addresses
-    monitor             live monitoring for server updates\
+    monitor [hosts]     live monitoring for server updates\
         "
     );
     print!("{}", opts.usage(&brief));
@@ -183,12 +184,12 @@ pub fn parse() -> Cli {
     opts.optopt("M", "master", &help, "LIST");
     let help = format!(
         "time to wait results from masters [default: {}]",
-        cli.master_timeout
+        cli.master_timeout.as_secs()
     );
     opts.optopt("T", "master-timeout", &help, "SECONDS");
     let help = format!(
         "time to wait results from servers [default: {}]",
-        cli.server_timeout
+        cli.server_timeout.as_secs()
     );
     opts.optopt("t", "server-timeout", &help, "SECONDS");
     let protocols = cli
@@ -249,7 +250,7 @@ pub fn parse() -> Cli {
     }
 
     match matches.opt_get("master-timeout") {
-        Ok(Some(t)) => cli.master_timeout = t,
+        Ok(Some(t)) => cli.master_timeout = Duration::from_secs(t),
         Ok(None) => {}
         Err(_) => {
             eprintln!("Invalid master-timeout");
@@ -258,7 +259,7 @@ pub fn parse() -> Cli {
     }
 
     match matches.opt_get("server-timeout") {
-        Ok(Some(t)) => cli.server_timeout = t,
+        Ok(Some(t)) => cli.server_timeout = Duration::from_secs(t),
         Ok(None) => {}
         Err(_) => {
             eprintln!("Invalid server-timeout");

@@ -11,7 +11,7 @@ mod list_servers;
 mod monitor_servers;
 mod query_servers_info;
 
-use std::{io, process};
+use std::{io, net::SocketAddr, process};
 
 use thiserror::Error;
 use xash3d_observer::{Handler, Observer, ObserverBuilder};
@@ -29,22 +29,47 @@ enum QueryError {
     Io(#[from] io::Error),
 }
 
+fn observer_builder<'a>(cli: &'a Cli) -> ObserverBuilder<'a> {
+    ObserverBuilder::new().filter(&cli.filter)
+}
+
 fn create_observer<T: Handler>(cli: &Cli, handler: T) -> io::Result<Observer<T>> {
-    ObserverBuilder::new()
-        .filter(&cli.filter)
-        .build(handler, cli.masters.as_slice())
+    observer_builder(cli).build(handler, cli.masters.as_slice())
+}
+
+/// Same as [create_observer] but without master servers.
+fn create_observer_no_masters<T: Handler>(cli: &Cli, handler: T) -> io::Result<Observer<T>> {
+    observer_builder(cli).build(handler, &[] as &[&str])
+}
+
+fn parse_server_addresses(servers: &[String]) -> Vec<SocketAddr> {
+    let mut list = Vec::with_capacity(servers.len());
+    for i in servers {
+        match i.parse() {
+            Ok(addr) => list.push(addr),
+            Err(_) => eprintln!("invalid address {i}"),
+        }
+    }
+    if servers.len() != list.len() {
+        process::exit(1);
+    }
+    list.sort_unstable();
+    list.dedup();
+    list
 }
 
 fn execute(cli: Cli) -> Result<(), QueryError> {
     match cli.args.first().map(|s| s.as_str()).unwrap_or_default() {
-        "all" | "" => query_servers_info::run(&cli, &[])?,
+        "all" | "" => query_servers_info::run_all(&cli)?,
         "info" => {
-            if cli.args.len() > 1 {
-                query_servers_info::run(&cli, &cli.args[1..])?;
-            }
+            let list = parse_server_addresses(&cli.args[1..]);
+            query_servers_info::run_custom_servers(&cli, list)?;
         }
         "list" => list_servers::run(&cli)?,
-        "monitor" => monitor_servers::run(&cli)?,
+        "monitor" => {
+            let list = parse_server_addresses(&cli.args[1..]);
+            monitor_servers::run(&cli, list)?;
+        }
         _ => return Err(QueryError::UndefinedCommand),
     }
     Ok(())

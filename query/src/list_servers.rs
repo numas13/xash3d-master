@@ -1,8 +1,4 @@
-use std::{
-    collections::HashSet,
-    net::SocketAddr,
-    time::{Duration, Instant},
-};
+use std::{collections::HashSet, net::SocketAddr, time::Instant};
 
 use serde::Serialize;
 use xash3d_observer::Handler;
@@ -11,7 +7,7 @@ use crate::{cli::Cli, QueryError};
 
 #[derive(Clone, Debug, Serialize)]
 struct ListResult<'a> {
-    master_timeout: u32,
+    master_timeout: u64,
     masters: &'a [Box<str>],
     filter: &'a str,
     servers: &'a [SocketAddr],
@@ -24,9 +20,8 @@ struct CollectServers {
 
 impl CollectServers {
     fn new(cli: &Cli) -> Self {
-        let timeout = Duration::from_secs(cli.master_timeout as u64);
         Self {
-            end_time: Instant::now() + timeout,
+            end_time: Instant::now() + cli.master_timeout,
             servers: HashSet::with_capacity(256),
         }
     }
@@ -46,7 +41,7 @@ impl Handler for CollectServers {
 fn print_server_list(cli: &Cli, servers: &[SocketAddr]) {
     if cli.json || cli.debug {
         let result = ListResult {
-            master_timeout: cli.master_timeout,
+            master_timeout: cli.master_timeout.as_secs(),
             masters: &cli.masters,
             filter: &cli.filter,
             servers,

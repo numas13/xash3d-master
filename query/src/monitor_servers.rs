@@ -15,19 +15,25 @@ use crate::{
 
 struct Monitor<'a> {
     cli: &'a Cli,
+    custom_servers: Vec<SocketAddr>,
     servers: HashMap<SocketAddr, ServerInfo>,
 }
 
 impl<'a> Monitor<'a> {
-    fn new(cli: &'a Cli) -> Self {
+    fn new(cli: &'a Cli, custom_servers: Vec<SocketAddr>) -> Self {
         Self {
             cli,
+            custom_servers,
             servers: Default::default(),
         }
     }
 }
 
 impl Handler for Monitor<'_> {
+    fn extra_servers(&mut self) -> &[SocketAddr] {
+        &self.custom_servers
+    }
+
     fn server_update(
         &mut self,
         addr: SocketAddr,
@@ -74,9 +80,14 @@ impl Handler for Monitor<'_> {
     }
 }
 
-pub(crate) fn run(cli: &Cli) -> Result<(), QueryError> {
-    let handler = Monitor::new(cli);
-    let mut observer = crate::create_observer(cli, handler)?;
+pub(crate) fn run(cli: &Cli, servers: Vec<SocketAddr>) -> Result<(), QueryError> {
+    let is_custom_servers = !servers.is_empty();
+    let handler = Monitor::new(cli, servers);
+    let mut observer = if is_custom_servers {
+        crate::create_observer_no_masters(cli, handler)?
+    } else {
+        crate::create_observer(cli, handler)?
+    };
     observer.run()?;
     Ok(())
 }

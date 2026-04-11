@@ -170,6 +170,7 @@ fn print_server_info(cli: &Cli, servers: &[&ServerResult]) {
                         password: info.password,
                     }
                 }
+                ServerResultKind::Ping => unreachable!(),
                 ServerResultKind::Timeout => {
                     p! {
                         status: "timeout",

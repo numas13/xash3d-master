@@ -17,6 +17,7 @@ pub enum ServerResultKind {
         #[serde(flatten)]
         info: ServerInfo,
     },
+    Ping,
     InvalidPacket {
         message: String,
         response: String,
@@ -50,6 +51,10 @@ impl ServerResult {
 
     pub fn ok(address: SocketAddr, ping: Duration, info: ServerInfo) -> Self {
         Self::new(address, Some(ping), ServerResultKind::Ok { info })
+    }
+
+    pub fn ping(address: SocketAddr, ping: Duration) -> Self {
+        Self::new(address, Some(ping), ServerResultKind::Ping)
     }
 
     pub fn timeout(address: SocketAddr) -> Self {

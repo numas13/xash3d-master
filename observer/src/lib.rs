@@ -115,6 +115,9 @@ pub trait Handler {
     ) {
     }
 
+    /// Called if a server info does not changed.
+    fn server_update_ping(&mut self, addr: SocketAddr, ping: Duration) {}
+
     /// Called if a server removed from a query list.
     fn server_remove(&mut self, addr: SocketAddr) {}
 
@@ -452,10 +455,12 @@ impl<T: Handler> Observer<T> {
                 if let Some(con) = self.connections.get_mut(&from) {
                     match con.state {
                         S::ProtocolDetection | S::WaitingInfo => {
+                            let ping = con.ping(self.now);
                             if con.is_changed(buf) {
                                 let is_new = con.state == S::ProtocolDetection;
-                                let ping = con.ping(self.now);
                                 self.handler.server_update(from, &packet, is_new, ping);
+                            } else {
+                                self.handler.server_update_ping(from, ping);
                             }
                             con.state = S::Idle;
                         }

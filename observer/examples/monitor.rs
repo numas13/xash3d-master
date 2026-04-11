@@ -101,18 +101,26 @@ impl Handler for Monitor {
         let info = ServerInfo::new(info);
         match self.servers.entry(addr) {
             Entry::Occupied(mut e) => {
-                println!("{:24?} --- {:>7.1} {}", addr, ' ', e.get());
-                println!("{addr:24?} +++ {ping:>7.1?} {info}");
+                println!("{:8} {addr:24?} {ping:>7.1?} {info}", "update");
                 e.insert(info);
             }
             Entry::Vacant(e) => {
-                println!("{addr:24?} +++ {ping:>7.1?} {info}");
+                println!("{:8} {addr:24?} {ping:>7.1?} {info}", "new");
                 e.insert(info);
             }
         }
     }
 
+    fn server_update_ping(&mut self, addr: SocketAddr, ping: Duration) {
+        println!("{:8} {addr:24?} {ping:>7.1?}", "ping");
+    }
+
+    fn server_timeout(&mut self, addr: SocketAddr) {
+        println!("{:8} {addr:24?}", "timeout");
+    }
+
     fn server_remove(&mut self, addr: SocketAddr) {
+        println!("{:8} {addr:24?}", "remove");
         self.servers.remove(&addr);
     }
 }

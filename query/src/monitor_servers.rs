@@ -63,6 +63,13 @@ impl Handler for Monitor<'_> {
         }
     }
 
+    fn server_update_ping(&mut self, addr: SocketAddr, ping: Duration) {
+        if self.cli.json {
+            let result = ServerResult::ping(addr, ping);
+            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+        }
+    }
+
     fn server_timeout(&mut self, addr: SocketAddr) {
         if self.cli.json {
             let result = ServerResult::timeout(addr);

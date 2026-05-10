@@ -1,7 +1,7 @@
 use std::{
     io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
-    sync::atomic::AtomicBool,
+    sync::mpsc,
     thread,
     time::Duration,
 };
@@ -15,25 +15,31 @@ use xash3d_protocol::{
 };
 
 use crate::{
-    master_server::{MasterServer, ServerInfo},
+    master_server::{Error, MasterServer, ServerInfo},
     Config,
 };
 
 const UNSPECIFIED: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 
-struct Logger;
-static LOGGER: Logger = Logger;
+fn init_logger() {
+    struct Logger;
 
-impl log::Log for Logger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool {
-        true
+    impl log::Log for Logger {
+        fn enabled(&self, _metadata: &log::Metadata) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record) {
+            println!("{} - {}", record.level(), record.args());
+        }
+
+        fn flush(&self) {}
     }
 
-    fn log(&self, record: &log::Record) {
-        println!("{} - {}", record.level(), record.args());
-    }
+    static TEST_LOGGER: Logger = Logger;
 
-    fn flush(&self) {}
+    log::set_logger(&TEST_LOGGER).ok();
+    log::set_max_level(log::LevelFilter::Trace);
 }
 
 struct Test {
@@ -62,10 +68,16 @@ impl Test {
     }
 
     fn create_master(&mut self, cfg: &Config) {
-        let mut master = MasterServer::new(cfg.clone(), UNSPECIFIED).unwrap();
-        self.master_addr = master.local_addr().unwrap();
-        let sig_flag = AtomicBool::new(false);
-        thread::spawn(move || master.run(&sig_flag).unwrap());
+        let cfg = cfg.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            smol::block_on(async {
+                let mut master = MasterServer::new(cfg, UNSPECIFIED).await?;
+                tx.send(master.local_addr()?).unwrap();
+                master.run(None).await
+            })
+        });
+        self.master_addr = rx.recv().unwrap();
     }
 
     fn add_server(&mut self, cfg: &Config) {
@@ -101,13 +113,12 @@ impl Test {
 }
 
 #[test]
-fn check_remove_server_by_ip() {
+fn check_remove_server_by_ip() -> Result<(), Error> {
     use server::{Os, ServerAdd, ServerFlags, ServerType};
 
     let cfg = Config::default();
-
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
-    let mut master = MasterServer::new(cfg, addr).unwrap();
+    let mut master = smol::block_on(async { MasterServer::new(cfg, addr).await })?;
 
     let server_add = ServerAdd {
         gamedir: Str(&b"valve"[..]),
@@ -147,12 +158,13 @@ fn check_remove_server_by_ip() {
     assert_eq!(master.count_all_servers(), 4);
 
     master.remove_servers_by_ip(&Ipv4Addr::new(1, 1, 1, 1));
-
     assert_eq!(master.count_all_servers(), 1);
+
+    Ok(())
 }
 
 #[test]
-fn check_query_servers() {
+fn check_query_servers() -> Result<(), Error> {
     const BUILDNUM_NEW: u32 = 3500;
     const BUILDNUM_OLD: u32 = 3000;
 
@@ -162,7 +174,7 @@ fn check_query_servers() {
     cfg.master.client.min_old_engine_buildnum = BUILDNUM_OLD;
 
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
-    let master = MasterServer::new(cfg, addr).unwrap();
+    let master = smol::block_on(async { MasterServer::new(cfg, addr).await })?;
 
     let mut query = QueryServers {
         region: Region::RestOfTheWorld,
@@ -196,12 +208,13 @@ fn check_query_servers() {
     assert!(master.is_query_servers_valid(&addr, &query));
     query.filter.client_buildnum = Some(BUILDNUM_OLD - 1);
     assert!(!master.is_query_servers_valid(&addr, &query));
+
+    Ok(())
 }
 
 #[test]
 fn server_add() {
-    log::set_logger(&LOGGER).ok();
-    log::set_max_level(log::LevelFilter::Trace);
+    init_logger();
 
     let cfg = Config::default();
     let test = Test::with_master_and_server(&cfg);
@@ -234,8 +247,7 @@ fn server_add() {
 
 #[test]
 fn server_reuse_challenge() {
-    log::set_logger(&LOGGER).ok();
-    log::set_max_level(log::LevelFilter::Trace);
+    init_logger();
 
     let test = Test::with_master(&Config::default());
     let sock = UdpSocket::bind(UNSPECIFIED).unwrap();
@@ -258,8 +270,7 @@ fn server_reuse_challenge() {
 
 #[test]
 fn client_rate_limit() {
-    log::set_logger(&LOGGER).ok();
-    log::set_max_level(log::LevelFilter::Trace);
+    init_logger();
 
     let mut cfg = Config::default();
     cfg.master.server.client_rate_limit = 10;

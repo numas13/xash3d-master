@@ -7,22 +7,24 @@ use std::{
     fmt::Display,
     hash::Hash,
     io,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs, UdpSocket},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     str::{self, FromStr},
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
 };
 
 use ahash::AHashSet as HashSet;
 use blake2b_simd::Params;
 use fastrand::Rng;
+use smol::{
+    channel, future,
+    net::{resolve, AsyncToSocketAddrs as ToSocketAddrs, UdpSocket},
+};
 use thiserror::Error;
 use xash3d_protocol::{
-    admin,
+    admin::AdminPacket,
     filter::{Filter, FilterFlags, Version},
-    game::{self, QueryServers},
+    game::{GamePacket, QueryServers},
     master::{self, ServerAddress},
-    server,
+    server::{self, ServerPacket},
     wrappers::Str,
     Error as ProtocolError,
 };
@@ -126,11 +128,11 @@ pub enum Error {
     UnexpectedPacket,
 }
 
-fn resolve_socket_addr<A>(addr: A, is_ipv4: bool) -> io::Result<Option<SocketAddr>>
+async fn resolve_socket_addr<A>(addr: A, is_ipv4: bool) -> io::Result<Option<SocketAddr>>
 where
     A: ToSocketAddrs,
 {
-    for i in addr.to_socket_addrs()? {
+    for i in resolve(addr).await? {
         if i.is_ipv4() == is_ipv4 {
             return Ok(Some(i));
         }
@@ -138,7 +140,7 @@ where
     Ok(None)
 }
 
-fn resolve_update_addr(cfg: &MasterConfig, local_addr: SocketAddr) -> SocketAddr {
+async fn resolve_update_addr(cfg: &MasterConfig, local_addr: SocketAddr) -> SocketAddr {
     if let Some(s) = cfg.client.update_addr.as_deref() {
         let addr = if !s.contains(':') {
             format!("{s}:{}", local_addr.port())
@@ -146,7 +148,7 @@ fn resolve_update_addr(cfg: &MasterConfig, local_addr: SocketAddr) -> SocketAddr
             s.to_owned()
         };
 
-        match resolve_socket_addr(&addr, local_addr.is_ipv4()) {
+        match resolve_socket_addr(&addr, local_addr.is_ipv4()).await {
             Ok(Some(x)) => return x,
             Ok(None) => error!("Update address: failed to resolve IP for \"{}\"", addr),
             Err(e) => error!("Update address: {e}"),
@@ -155,35 +157,46 @@ fn resolve_update_addr(cfg: &MasterConfig, local_addr: SocketAddr) -> SocketAddr
     local_addr
 }
 
+async fn bind_socket(addr: SocketAddr) -> Result<UdpSocket, Error> {
+    info!("Listen address: {addr}");
+    let sock = UdpSocket::bind(addr).await.map_err(Error::BindSocket)?;
+    Ok(sock)
+}
+
 pub enum Master {
     V4(MasterServer<SocketAddrV4>),
     V6(MasterServer<SocketAddrV6>),
 }
 
 impl Master {
-    pub fn new(cfg: Config) -> Result<Self, Error> {
-        match SocketAddr::new(cfg.master.server.ip, cfg.master.server.port) {
-            SocketAddr::V4(addr) => MasterServer::new(cfg, addr).map(Self::V4),
-            SocketAddr::V6(addr) => MasterServer::new(cfg, addr).map(Self::V6),
+    pub async fn with_address(cfg: Config, addr: SocketAddr) -> Result<Self, Error> {
+        match addr {
+            SocketAddr::V4(addr) => MasterServer::new(cfg, addr).await.map(Self::V4),
+            SocketAddr::V6(addr) => MasterServer::new(cfg, addr).await.map(Self::V6),
         }
     }
 
-    pub fn update_config(&mut self, cfg: Config) -> Result<(), Error> {
+    pub async fn new(cfg: Config) -> Result<Self, Error> {
+        let addr = SocketAddr::new(cfg.master.server.ip, cfg.master.server.port);
+        Self::with_address(cfg, addr).await
+    }
+
+    pub async fn update_config(&mut self, cfg: Config) -> Result<(), Error> {
         let cfg = match self {
-            Self::V4(inner) => inner.update_config(cfg)?,
-            Self::V6(inner) => inner.update_config(cfg)?,
+            Self::V4(inner) => inner.update_config(cfg).await?,
+            Self::V6(inner) => inner.update_config(cfg).await?,
         };
         if let Some(cfg) = cfg {
             info!("Server IP version changed, full restart");
-            *self = Self::new(cfg)?;
+            *self = Self::new(cfg).await?;
         }
         Ok(())
     }
 
-    pub fn run(&mut self, sig_flag: &AtomicBool) -> Result<(), Error> {
+    pub async fn run(&mut self, stop: Option<channel::Receiver<()>>) -> Result<(), Error> {
         match self {
-            Self::V4(inner) => inner.run(sig_flag),
-            Self::V6(inner) => inner.run(sig_flag),
+            Self::V4(inner) => inner.run(stop).await,
+            Self::V6(inner) => inner.run(stop).await,
         }
     }
 }
@@ -214,14 +227,9 @@ pub struct MasterServer<Addr: AddrExt> {
 }
 
 impl<Addr: AddrExt> MasterServer<Addr> {
-    pub fn new(cfg: Config, addr: Addr) -> Result<Self, Error> {
-        info!("Listen address: {addr}");
-
-        let sock = UdpSocket::bind(addr).map_err(Error::BindSocket)?;
-        // make socket interruptable by singals
-        sock.set_read_timeout(Some(Duration::from_secs(u32::MAX as u64)))?;
-
-        let update_addr = resolve_update_addr(&cfg.master, addr.wrap());
+    pub async fn new(cfg: Config, addr: Addr) -> Result<Self, Error> {
+        let sock = bind_socket(addr.wrap()).await?;
+        let update_addr = resolve_update_addr(&cfg.master, addr.wrap()).await;
         let timeout = &cfg.master.server.timeout;
 
         Ok(Self {
@@ -248,21 +256,46 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         self.sock.local_addr()
     }
 
-    pub fn update_config(&mut self, cfg: Config) -> Result<Option<Config>, Error> {
+    async fn bind(&mut self, addr: SocketAddr) -> Result<(), Error> {
+        self.sock = bind_socket(addr).await?;
+
+        info!("Clear all servers and challenges");
+        let Self {
+            cfg: _,
+            rng: _,
+            sock: _,
+            challenges,
+            servers,
+            admin_challenges,
+            admin_limit: _,
+            update_addr: _,
+            update_gamedir,
+            client_rate_limit: _,
+            blocklist: _,
+            stats,
+            filtered_servers: _,
+            filtered_servers_nat: _,
+        } = self;
+
+        challenges.clear();
+        servers.clear();
+        admin_challenges.clear();
+        update_gamedir.clear();
+        stats.clear();
+
+        Ok(())
+    }
+
+    pub async fn update_config(&mut self, cfg: Config) -> Result<Option<Config>, Error> {
         let local_addr = self.local_addr()?;
         let addr = SocketAddr::new(cfg.master.server.ip, cfg.master.server.port);
         if local_addr.is_ipv4() != addr.is_ipv4() {
             return Ok(Some(cfg));
         } else if local_addr != addr {
-            info!("Listen address: {addr}");
-            self.sock = UdpSocket::bind(addr).map_err(Error::BindSocket)?;
-            // make socket interruptible by signals
-            let timeout = Duration::from_secs(u32::MAX as u64);
-            self.sock.set_read_timeout(Some(timeout))?;
-            self.clear();
+            self.bind(addr).await?;
         }
 
-        self.update_addr = resolve_update_addr(&cfg.master, addr);
+        self.update_addr = resolve_update_addr(&cfg.master, addr).await;
         self.stats.update_config(cfg.stat);
         self.cfg = cfg.master;
 
@@ -276,10 +309,32 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         Ok(None)
     }
 
-    pub fn run(&mut self, sig_flag: &AtomicBool) -> Result<(), Error> {
+    pub async fn run(&mut self, mut stop: Option<channel::Receiver<()>>) -> Result<(), Error> {
+        enum Control<T> {
+            Break,
+            Result(T),
+        }
+
         let mut buf = [0; 2048];
-        while !sig_flag.load(Ordering::Relaxed) {
-            let (n, from) = match self.sock.recv_from(&mut buf) {
+        loop {
+            let recv = async { Control::Result(self.sock.recv_from(&mut buf).await) };
+            let control = match stop.as_mut() {
+                Some(stop) => {
+                    let wait_stop = async {
+                        stop.recv().await.ok();
+                        Control::Break
+                    };
+                    future::or(wait_stop, recv).await
+                }
+                None => recv.await,
+            };
+
+            let result = match control {
+                Control::Break => break,
+                Control::Result(x) => x,
+            };
+
+            let (n, from) = match result {
                 Ok(x) => x,
                 Err(e) => match e.kind() {
                     io::ErrorKind::Interrupted => break,
@@ -294,7 +349,7 @@ impl<Addr: AddrExt> MasterServer<Addr> {
             };
 
             let src = &buf[..n];
-            if let Err(e) = self.handle_packet(from, src) {
+            if let Err(e) = self.handle_packet(from, src).await {
                 debug!("{}: {}: \"{}\"", from, e, Str(src));
                 self.stats.on_error();
             }
@@ -302,28 +357,19 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         Ok(())
     }
 
-    fn clear(&mut self) {
-        info!("Clear all servers and challenges");
-        self.challenges.clear();
-        self.servers.clear();
-        self.admin_challenges.clear();
-        self.stats.clear();
-        self.client_rate_limit.clear();
-    }
-
-    fn handle_server_packet(&mut self, from: Addr, p: server::Packet) -> Result<(), Error> {
+    async fn handle_server_packet(&mut self, from: Addr, p: ServerPacket<'_>) -> Result<(), Error> {
         trace!("{from}: recv {p:?}");
 
         match p {
-            server::Packet::Challenge(p) => {
+            ServerPacket::Challenge(p) => {
                 let challenge = self.server_challenge_add(from);
                 let resp = master::ChallengeResponse::new(challenge, p.server_challenge);
                 trace!("{from}: send {resp:?}");
                 let mut buf = [0; 32];
                 let packet = resp.encode(&mut buf)?;
-                self.sock.send_to(packet, from)?;
+                self.sock.send_to(packet, from).await?;
             }
-            server::Packet::ServerAdd(p) => {
+            ServerPacket::ServerAdd(p) => {
                 if p.version < self.cfg.server.min_version {
                     let min = self.cfg.server.min_version;
                     warn!(
@@ -349,7 +395,7 @@ impl<Addr: AddrExt> MasterServer<Addr> {
                     self.stats.servers_count(self.servers.len());
                 }
             }
-            server::Packet::ServerRemove => {
+            ServerPacket::ServerRemove => {
                 self.stats.on_server_del();
             }
             _ => {
@@ -400,7 +446,7 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         self.is_buildnum_valid(from, query, buildnum_min)
     }
 
-    fn send_fake_server(
+    async fn send_fake_server(
         &self,
         from: Addr,
         key: Option<u32>,
@@ -409,21 +455,27 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         trace!("{from}: send fake server ({key:?}, {update_addr})");
         match update_addr {
             SocketAddr::V4(addr) => {
-                self.send_server_list(from, key, &[addr])?;
+                self.send_server_list(from, key, &[addr]).await?;
             }
             SocketAddr::V6(addr) => {
-                self.send_server_list(from, key, &[addr])?;
+                self.send_server_list(from, key, &[addr]).await?;
             }
         }
         Ok(())
     }
 
-    fn send_servers(&mut self, from: Addr, query: &QueryServers<Filter>) -> Result<(), Error> {
+    async fn send_servers(
+        &mut self,
+        from: Addr,
+        query: &QueryServers<Filter<'_>>,
+    ) -> Result<(), Error> {
         let filter = &query.filter;
 
         if !self.is_query_servers_valid(&from, query) {
             self.save_client_gamedir(from, query.filter.gamedir);
-            return self.send_fake_server(from, filter.key, self.update_addr);
+            return self
+                .send_fake_server(from, filter.key, self.update_addr)
+                .await;
         }
 
         let Some(client_version) = filter.clver else {
@@ -453,12 +505,14 @@ impl<Addr: AddrExt> MasterServer<Addr> {
             }
         }
 
-        self.send_server_list(from, filter.key, &self.filtered_servers)?;
+        self.send_server_list(from, filter.key, &self.filtered_servers)
+            .await?;
 
         // NOTE: If NAT is not set in a filter then by default the client is announced
         // to filtered servers behind NAT.
         if filter.contains_flags(FilterFlags::NAT).unwrap_or(true) {
-            self.send_client_to_nat_servers(from, &self.filtered_servers_nat)?;
+            self.send_client_to_nat_servers(from, &self.filtered_servers_nat)
+                .await?;
         }
 
         Ok(())
@@ -477,8 +531,8 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         self.update_gamedir.insert(from, gamedir);
     }
 
-    fn send_update_info(&mut self, from: Addr, protocol: u8) -> Result<(), Error> {
-        let gamedir = self.update_gamedir.remove(&from);
+    async fn send_update_info(&mut self, from: Addr, protocol: u8) -> Result<(), Error> {
+        let gamedir = self.update_gamedir.get(&from);
         let resp = server::GetServerInfoResponse {
             map: self.cfg.client.update_map.as_ref(),
             host: self.cfg.client.update_title.as_ref(),
@@ -491,11 +545,11 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         trace!("{from}: send {resp:?}");
         let mut buf = Addr::mtu_buffer();
         let packet = resp.encode(buf.as_mut())?;
-        self.sock.send_to(packet, from)?;
+        self.sock.send_to(packet, from).await?;
         Ok(())
     }
 
-    fn handle_game_packet(&mut self, from: Addr, p: game::Packet) -> Result<(), Error> {
+    async fn handle_game_packet(&mut self, from: Addr, p: GamePacket<'_>) -> Result<(), Error> {
         if self.cfg.server.client_rate_limit > 0 {
             let counter = self.client_rate_limit.entry(*from.ip()).or_default();
             counter.value = counter.value.saturating_add(1);
@@ -507,12 +561,12 @@ impl<Addr: AddrExt> MasterServer<Addr> {
 
         trace!("{from}: recv {p:?}");
         match p {
-            game::Packet::QueryServers(p) => {
+            GamePacket::QueryServers(p) => {
                 self.stats.on_query_servers();
-                self.send_servers(from, &p)?;
+                self.send_servers(from, &p).await?;
             }
-            game::Packet::GetServerInfo(p) => {
-                self.send_update_info(from, p.protocol)?;
+            GamePacket::GetServerInfo(p) => {
+                self.send_update_info(from, p.protocol).await?;
             }
             _ => {
                 // ignore other packets
@@ -521,7 +575,7 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         Ok(())
     }
 
-    fn handle_admin_packet(&mut self, from: Addr, p: admin::Packet) -> Result<(), Error> {
+    async fn handle_admin_packet(&mut self, from: Addr, p: AdminPacket<'_>) -> Result<(), Error> {
         trace!("{from}: recv {p:?}");
 
         if self.admin_limit.get(from.ip()).is_some() {
@@ -530,16 +584,16 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         }
 
         match p {
-            admin::Packet::AdminChallenge => {
+            AdminPacket::AdminChallenge => {
                 let (master_challenge, hash_challenge) = self.admin_challenge_add(from);
 
                 let resp = master::AdminChallengeResponse::new(master_challenge, hash_challenge);
                 trace!("{from}: send {resp:?}");
                 let mut buf = [0; 64];
                 let packet = resp.encode(&mut buf)?;
-                self.sock.send_to(packet, from)?;
+                self.sock.send_to(packet, from).await?;
             }
-            admin::Packet::AdminCommand(p) => {
+            AdminPacket::AdminCommand(p) => {
                 let entry = *self
                     .admin_challenges
                     .get(from.ip())
@@ -577,31 +631,31 @@ impl<Addr: AddrExt> MasterServer<Addr> {
                     }
                 }
             }
-            _ => unreachable!(),
+            _ => {}
         }
 
         Ok(())
     }
 
-    fn handle_packet(&mut self, from: Addr, src: &[u8]) -> Result<(), Error> {
+    async fn handle_packet(&mut self, from: Addr, src: &[u8]) -> Result<(), Error> {
         if self.is_blocked(from.ip()) {
             return Ok(());
         }
 
-        match server::Packet::decode(src) {
-            Ok(Some(p)) => return self.handle_server_packet(from, p),
+        match ServerPacket::decode(src) {
+            Ok(Some(p)) => return self.handle_server_packet(from, p).await,
             Ok(None) => {}
             Err(e) => Err(e)?,
         }
 
-        match game::Packet::decode(src) {
-            Ok(Some(p)) => return self.handle_game_packet(from, p),
+        match GamePacket::decode(src) {
+            Ok(Some(p)) => return self.handle_game_packet(from, p).await,
             Ok(None) => {}
             Err(e) => Err(e)?,
         }
 
-        match admin::Packet::decode(self.cfg.hash.len, src) {
-            Ok(Some(p)) => return self.handle_admin_packet(from, p),
+        match AdminPacket::decode(self.cfg.hash.len, src) {
+            Ok(Some(p)) => return self.handle_admin_packet(from, p).await,
             Ok(None) => {}
             Err(e) => Err(e)?,
         }
@@ -672,7 +726,12 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         }
     }
 
-    fn send_server_list<A, S>(&self, to: A, key: Option<u32>, servers: &[S]) -> Result<(), Error>
+    async fn send_server_list<A, S>(
+        &self,
+        to: A,
+        key: Option<u32>,
+        servers: &[S],
+    ) -> Result<(), Error>
     where
         A: ToSocketAddrs,
         S: ServerAddress,
@@ -682,7 +741,7 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         let mut offset = 0;
         loop {
             let (packet, count) = list.encode(buf.as_mut(), &servers[offset..])?;
-            self.sock.send_to(packet, &to)?;
+            self.sock.send_to(packet, &to).await?;
             offset += count;
             if offset >= servers.len() {
                 break;
@@ -691,11 +750,11 @@ impl<Addr: AddrExt> MasterServer<Addr> {
         Ok(())
     }
 
-    fn send_client_to_nat_servers(&self, to: Addr, servers: &[Addr]) -> Result<(), Error> {
+    async fn send_client_to_nat_servers(&self, to: Addr, servers: &[Addr]) -> Result<(), Error> {
         let mut buf = [0; 64];
         let packet = master::ClientAnnounce::new(to.wrap()).encode(&mut buf)?;
         for i in servers {
-            self.sock.send_to(packet, i)?;
+            self.sock.send_to(packet, i).await?;
         }
         Ok(())
     }

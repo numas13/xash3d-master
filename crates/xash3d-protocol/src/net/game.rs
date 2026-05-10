@@ -254,9 +254,13 @@ impl GetPlayers {
 }
 
 /// Game client packets.
+#[deprecated]
+pub type Packet<'a> = GamePacket<'a>;
+
+/// Game client packets.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-pub enum Packet<'a> {
+pub enum GamePacket<'a> {
     /// Request a list of server addresses from master servers.
     QueryServers(QueryServers<Filter<'a>>),
 
@@ -270,7 +274,7 @@ pub enum Packet<'a> {
     GetPlayers(GetPlayers),
 }
 
-impl<'a> Packet<'a> {
+impl<'a> GamePacket<'a> {
     /// Decode packet from `src`.
     pub fn decode(src: &'a [u8]) -> Result<Option<Self>, Error> {
         if src.starts_with(QueryServers::HEADER) {
@@ -320,7 +324,7 @@ mod tests {
         };
         let mut buf = [0; 512];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::QueryServers(p))));
+        assert_eq!(GamePacket::decode(t), Ok(Some(GamePacket::QueryServers(p))));
     }
 
     #[test]
@@ -341,10 +345,13 @@ mod tests {
         };
 
         let s = b"1\xff0.0.0.0:0\x00\\protocol\\48\\clver\\0.20\\nat\\0\0";
-        assert_eq!(Packet::decode(s), Ok(Some(Packet::QueryServers(p.clone()))));
+        assert_eq!(
+            GamePacket::decode(s),
+            Ok(Some(GamePacket::QueryServers(p.clone())))
+        );
 
         let s = b"1\xff0.0.0.0:0\x00\\protocol\\48\\clver\\0.20\\nat\\0";
-        assert_eq!(Packet::decode(s), Ok(Some(Packet::QueryServers(p))));
+        assert_eq!(GamePacket::decode(s), Ok(Some(GamePacket::QueryServers(p))));
     }
 
     #[test]
@@ -352,7 +359,7 @@ mod tests {
         let mut buf = [0; 32];
         let p = GetChallenge::new();
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::GetChallenge(p))));
+        assert_eq!(GamePacket::decode(t), Ok(Some(GamePacket::GetChallenge(p))));
     }
 
     #[test]
@@ -360,7 +367,10 @@ mod tests {
         let p = GetServerInfo::new(49);
         let mut buf = [0; 512];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::GetServerInfo(p))));
+        assert_eq!(
+            GamePacket::decode(t),
+            Ok(Some(GamePacket::GetServerInfo(p)))
+        );
     }
 
     #[test]
@@ -368,7 +378,10 @@ mod tests {
         let p = GetServerInfo2::new();
         let mut buf = [0; 64];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::GetServerInfo2(p))));
+        assert_eq!(
+            GamePacket::decode(t),
+            Ok(Some(GamePacket::GetServerInfo2(p)))
+        );
     }
 
     #[test]
@@ -376,7 +389,10 @@ mod tests {
         let p = GetServerInfo2::with_challenge(0xdeadbeef);
         let mut buf = [0; 64];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::GetServerInfo2(p))));
+        assert_eq!(
+            GamePacket::decode(t),
+            Ok(Some(GamePacket::GetServerInfo2(p)))
+        );
     }
 
     #[test]
@@ -384,6 +400,6 @@ mod tests {
         let p = GetPlayers::new(0x12345678).unwrap();
         let mut buf = [0; 32];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::GetPlayers(p))));
+        assert_eq!(GamePacket::decode(t), Ok(Some(GamePacket::GetPlayers(p))));
     }
 }

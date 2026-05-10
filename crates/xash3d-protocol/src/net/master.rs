@@ -301,9 +301,13 @@ impl AdminChallengeResponse {
 }
 
 /// Master server packet.
+#[deprecated]
+pub type Packet<'a> = MasterPacket<'a>;
+
+/// Master server packet.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-pub enum Packet<'a> {
+pub enum MasterPacket<'a> {
     /// Master server challenge response packet.
     ChallengeResponse(ChallengeResponse),
     /// Game server addresses list.
@@ -314,7 +318,7 @@ pub enum Packet<'a> {
     AdminChallengeResponse(AdminChallengeResponse),
 }
 
-impl<'a> Packet<'a> {
+impl<'a> MasterPacket<'a> {
     /// Decode packet from `src`.
     pub fn decode(src: &'a [u8]) -> Result<Option<Self>, Error> {
         if src.starts_with(ChallengeResponse::HEADER) {
@@ -341,7 +345,10 @@ mod tests {
         let p = ChallengeResponse::new(0x12345678, Some(0x87654321));
         let mut buf = [0; 512];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::ChallengeResponse(p))));
+        assert_eq!(
+            MasterPacket::decode(t),
+            Ok(Some(MasterPacket::ChallengeResponse(p)))
+        );
     }
 
     #[test]
@@ -355,7 +362,10 @@ mod tests {
         let p = ChallengeResponse::new(0x12345678, None);
         let mut buf = [0; 512];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::ChallengeResponse(p))));
+        assert_eq!(
+            MasterPacket::decode(t),
+            Ok(Some(MasterPacket::ChallengeResponse(p)))
+        );
     }
 
     #[test]
@@ -399,7 +409,10 @@ mod tests {
         let p = ClientAnnounce::new("1.2.3.4:12345".parse().unwrap());
         let mut buf = [0; 512];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::ClientAnnounce(p))));
+        assert_eq!(
+            MasterPacket::decode(t),
+            Ok(Some(MasterPacket::ClientAnnounce(p)))
+        );
     }
 
     #[test]
@@ -408,8 +421,8 @@ mod tests {
         let mut buf = [0; 64];
         let t = p.encode(&mut buf).unwrap();
         assert_eq!(
-            Packet::decode(t),
-            Ok(Some(Packet::AdminChallengeResponse(p)))
+            MasterPacket::decode(t),
+            Ok(Some(MasterPacket::AdminChallengeResponse(p)))
         );
     }
 }

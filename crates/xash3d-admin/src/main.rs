@@ -6,7 +6,8 @@ use std::net::UdpSocket;
 
 use blake2b_simd::Params;
 use thiserror::Error;
-use xash3d_protocol::{admin, master};
+use xash3d_protocol::admin::AdminCommand;
+use xash3d_protocol::{admin::AdminChallenge, master::MasterPacket};
 
 #[derive(Error, Debug)]
 enum Error {
@@ -80,12 +81,12 @@ fn send_command(cli: &cli::Cli) -> Result<(), Error> {
     sock.connect(&cli.address)?;
 
     let mut buf = [0; 512];
-    let packet = admin::AdminChallenge.encode(&mut buf)?;
+    let packet = AdminChallenge.encode(&mut buf)?;
     sock.send(packet)?;
 
     let n = sock.recv(&mut buf)?;
-    let (master_challenge, hash_challenge) = match master::Packet::decode(&buf[..n])? {
-        Some(master::Packet::AdminChallengeResponse(p)) => (p.master_challenge, p.hash_challenge),
+    let (master_challenge, hash_challenge) = match MasterPacket::decode(&buf[..n])? {
+        Some(MasterPacket::AdminChallengeResponse(p)) => (p.master_challenge, p.hash_challenge),
         _ => return Err(Error::UnexpectedPacket),
     };
 
@@ -103,8 +104,8 @@ fn send_command(cli: &cli::Cli) -> Result<(), Error> {
         .update(&hash_challenge.to_le_bytes())
         .finalize();
 
-    let packet = admin::AdminCommand::new(master_challenge, hash.as_bytes(), &cli.command)
-        .encode(&mut buf)?;
+    let packet =
+        AdminCommand::new(master_challenge, hash.as_bytes(), &cli.command).encode(&mut buf)?;
     sock.send(packet)?;
 
     Ok(())

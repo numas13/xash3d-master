@@ -870,9 +870,13 @@ where
 }
 
 /// Game server packet.
+#[deprecated]
+pub type Packet<'a> = ServerPacket<'a>;
+
+/// Game server packet.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-pub enum Packet<'a> {
+pub enum ServerPacket<'a> {
     /// Sended to a master server before `ServerAdd` packet.
     Challenge(Challenge),
     /// Add/update game server information on the master server.
@@ -892,7 +896,7 @@ pub enum Packet<'a> {
     GetPlayersResponse(GetPlayersResponse<&'a [u8]>),
 }
 
-impl<'a> Packet<'a> {
+impl<'a> ServerPacket<'a> {
     /// Decode packet from `src`.
     pub fn decode(src: &'a [u8]) -> Result<Option<Self>, Error> {
         if src.starts_with(Challenge::HEADER) {
@@ -927,15 +931,18 @@ mod tests {
         let p = Challenge::new(Some(0x12345678));
         let mut buf = [0; 128];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::Challenge(p))));
+        assert_eq!(
+            ServerPacket::decode(t),
+            Ok(Some(ServerPacket::Challenge(p)))
+        );
     }
 
     #[test]
     fn challenge_old() {
         let s = b"q\xff";
         assert_eq!(
-            Packet::decode(s),
-            Ok(Some(Packet::Challenge(Challenge::new(None))))
+            ServerPacket::decode(s),
+            Ok(Some(ServerPacket::Challenge(Challenge::new(None))))
         );
 
         let p = Challenge::new(None);
@@ -962,7 +969,10 @@ mod tests {
         };
         let mut buf = [0; 512];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::ServerAdd(p))));
+        assert_eq!(
+            ServerPacket::decode(t),
+            Ok(Some(ServerPacket::ServerAdd(p)))
+        );
     }
 
     #[test]
@@ -970,7 +980,10 @@ mod tests {
         let p = ServerRemove;
         let mut buf = [0; 64];
         let t = p.encode(&mut buf).unwrap();
-        assert_eq!(Packet::decode(t), Ok(Some(Packet::ServerRemove)));
+        assert_eq!(
+            ServerPacket::decode(t),
+            Ok(Some(ServerPacket::ServerRemove))
+        );
     }
 
     #[test]
@@ -978,8 +991,8 @@ mod tests {
         let mut buf = [0; 64];
         let p = GetChallengeResponse::new(0xdeadbeef);
         assert_eq!(
-            Packet::decode(p.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetChallengeResponse(p)))
+            ServerPacket::decode(p.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetChallengeResponse(p)))
         );
     }
 
@@ -1001,8 +1014,8 @@ mod tests {
         let mut buf = [0; 512];
         let t = p.encode(&mut buf).unwrap();
         assert_eq!(
-            Packet::decode(t),
-            Ok(Some(Packet::GetServerInfoResponse(p)))
+            ServerPacket::decode(t),
+            Ok(Some(ServerPacket::GetServerInfoResponse(p)))
         );
     }
 
@@ -1031,8 +1044,8 @@ mod tests {
             keywords: None,
         };
         assert_eq!(
-            Packet::decode(base.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetServerInfo2Response(base.clone())))
+            ServerPacket::decode(base.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetServerInfo2Response(base.clone())))
         );
 
         let extra_port = GetServerInfo2Response {
@@ -1040,8 +1053,10 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            Packet::decode(extra_port.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetServerInfo2Response(extra_port.clone())))
+            ServerPacket::decode(extra_port.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetServerInfo2Response(
+                extra_port.clone()
+            )))
         );
 
         let extra_steam_id = GetServerInfo2Response {
@@ -1049,8 +1064,10 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            Packet::decode(extra_steam_id.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetServerInfo2Response(extra_steam_id.clone())))
+            ServerPacket::decode(extra_steam_id.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetServerInfo2Response(
+                extra_steam_id.clone()
+            )))
         );
 
         let extra_tv = GetServerInfo2Response {
@@ -1061,8 +1078,8 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            Packet::decode(extra_tv.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetServerInfo2Response(extra_tv.clone())))
+            ServerPacket::decode(extra_tv.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetServerInfo2Response(extra_tv.clone())))
         );
 
         let extra_keywords = GetServerInfo2Response {
@@ -1070,8 +1087,10 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            Packet::decode(extra_keywords.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetServerInfo2Response(extra_keywords.clone())))
+            ServerPacket::decode(extra_keywords.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetServerInfo2Response(
+                extra_keywords.clone()
+            )))
         );
 
         let extra_app_id = GetServerInfo2Response {
@@ -1079,8 +1098,10 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            Packet::decode(extra_app_id.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetServerInfo2Response(extra_app_id.clone())))
+            ServerPacket::decode(extra_app_id.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetServerInfo2Response(
+                extra_app_id.clone()
+            )))
         );
 
         let extra_all = GetServerInfo2Response {
@@ -1095,8 +1116,10 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            Packet::decode(extra_all.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetServerInfo2Response(extra_all.clone())))
+            ServerPacket::decode(extra_all.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetServerInfo2Response(
+                extra_all.clone()
+            )))
         );
     }
 
@@ -1121,8 +1144,8 @@ mod tests {
             bots: 8,
         };
         assert_eq!(
-            Packet::decode(base.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetServerInfo2ResponseOld(base.clone())))
+            ServerPacket::decode(base.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetServerInfo2ResponseOld(base.clone())))
         );
 
         let extra = GetServerInfo2ResponseOld {
@@ -1137,18 +1160,18 @@ mod tests {
             ..base
         };
         assert_eq!(
-            Packet::decode(extra.encode(&mut buf).unwrap()),
-            Ok(Some(Packet::GetServerInfo2ResponseOld(extra.clone())))
+            ServerPacket::decode(extra.encode(&mut buf).unwrap()),
+            Ok(Some(ServerPacket::GetServerInfo2ResponseOld(extra.clone())))
         );
     }
 
     #[test]
     fn get_server_info_response_wrong_version() {
         let s = b"\xff\xff\xff\xffinfo\nfoobar: wrong version\n";
-        assert_eq!(Packet::decode(s), Err(Error::InvalidProtocolVersion));
+        assert_eq!(ServerPacket::decode(s), Err(Error::InvalidProtocolVersion));
 
         let s = b"\xff\xff\xff\xffinfo\nfoobar\xff: wrong version\n";
-        assert_eq!(Packet::decode(s), Err(Error::InvalidProtocolVersion));
+        assert_eq!(ServerPacket::decode(s), Err(Error::InvalidProtocolVersion));
     }
 
     #[test]
@@ -1172,8 +1195,8 @@ mod tests {
         let packet = GetPlayersResponse::new(players.into_iter());
         let mut buf = [0; 512];
         let encoded = packet.encode(&mut buf).unwrap();
-        let decoded = Packet::decode(encoded).unwrap().unwrap();
-        let Packet::GetPlayersResponse(response) = decoded else {
+        let decoded = ServerPacket::decode(encoded).unwrap().unwrap();
+        let ServerPacket::GetPlayersResponse(response) = decoded else {
             panic!();
         };
         assert_eq!(response.players_count(), 2);

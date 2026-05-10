@@ -13,16 +13,9 @@ mod stats;
 mod str_arr;
 mod time;
 
-use std::{
-    process,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-};
+use std::process;
 
-#[cfg(not(windows))]
-use signal_hook::{consts::signal::*, flag as signal_flag};
+use tokio::sync::watch;
 
 use crate::{
     cli::Cli,
@@ -60,7 +53,7 @@ fn load_config(cli: &Cli, logger: &Logger) -> Result<Config, config::Error> {
     Ok(cfg)
 }
 
-fn run() -> Result<(), Error> {
+async fn run() -> Result<(), Error> {
     let cli = cli::parse().unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
@@ -76,34 +69,66 @@ fn run() -> Result<(), Error> {
         process::exit(1);
     });
 
-    let mut master = Master::new(cfg)?;
-    let sig_flag = Arc::new(AtomicBool::new(false));
-    // XXX: Windows does not support SIGUSR1.
+    let mut master = Master::new(cfg).await?;
+
     #[cfg(not(windows))]
-    signal_flag::register(SIGUSR1, sig_flag.clone())?;
+    let (mut signal_exit, mut signal_reload) = {
+        use tokio::signal::unix::{signal, SignalKind};
+        (
+            signal(SignalKind::interrupt())?,
+            signal(SignalKind::user_defined1())?,
+        )
+    };
+
+    #[cfg(windows)]
+    let (mut signal_exit, mut signal_reload) = {
+        (
+            tokio::signal::windows::ctrl_c()?,
+            tokio::signal::windows::ctrl_break()?,
+        )
+    };
 
     loop {
-        master.run(&sig_flag)?;
+        let (tx, rx) = watch::channel(());
+        let task = tokio::spawn(async {
+            master.run(Some(rx)).await?;
+            Ok::<_, Error>(master)
+        });
 
-        if sig_flag.swap(false, Ordering::Relaxed) {
-            if let Some(config_path) = cli.config_path.as_deref() {
-                info!("Reloading config from {}", config_path);
+        let exit = tokio::select! {
+            _ = signal_exit.recv() => true,
+            _ = signal_reload.recv() => false,
+        };
 
-                match load_config(&cli, logger) {
-                    Ok(cfg) => {
-                        if let Err(e) = master.update_config(cfg) {
-                            error!("{}", e);
-                        }
+        tx.send(()).ok();
+        master = task.await??;
+
+        if exit {
+            break;
+        }
+
+        if let Some(config_path) = cli.config_path.as_deref() {
+            info!("Reloading config from {}", config_path);
+            match load_config(&cli, logger) {
+                Ok(cfg) => {
+                    if let Err(e) = master.update_config(cfg).await {
+                        error!("{}", e);
                     }
-                    Err(e) => error!("failed to load config: {}", e),
                 }
+                Err(e) => error!("failed to load config: {}", e),
             }
+        } else {
+            warn!("Use --config option to specify the path to a configuration file");
         }
     }
+
+    info!("Server stopped");
+    Ok(())
 }
 
-fn main() {
-    if let Err(e) = run() {
+#[tokio::main(flavor = "local")]
+async fn main() {
+    if let Err(e) = run().await {
         error!("{}", e);
         process::exit(1);
     }

@@ -93,16 +93,20 @@ impl<'a> AdminCommand<'a> {
 }
 
 /// Admin packet.
+#[deprecated]
+pub type Packet<'a> = AdminPacket<'a>;
+
+/// Admin packet.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-pub enum Packet<'a> {
+pub enum AdminPacket<'a> {
     /// Admin challenge request.
     AdminChallenge,
     /// Admin command.
     AdminCommand(AdminCommand<'a>),
 }
 
-impl<'a> Packet<'a> {
+impl<'a> AdminPacket<'a> {
     /// Decode packet from `src` with specified hash length.
     pub fn decode(hash_len: usize, src: &'a [u8]) -> Result<Option<Self>, Error> {
         if src.starts_with(AdminChallenge::HEADER) {
@@ -126,8 +130,8 @@ mod tests {
         let mut buf = [0; 512];
         let t = p.encode(&mut buf).unwrap();
         assert_eq!(
-            Packet::decode(HASH_LEN, t),
-            Ok(Some(Packet::AdminChallenge))
+            AdminPacket::decode(HASH_LEN, t),
+            Ok(Some(AdminPacket::AdminChallenge))
         );
     }
 
@@ -137,8 +141,8 @@ mod tests {
         let mut buf = [0; 512];
         let t = p.encode(&mut buf).unwrap();
         assert_eq!(
-            Packet::decode(HASH_LEN, t),
-            Ok(Some(Packet::AdminCommand(p)))
+            AdminPacket::decode(HASH_LEN, t),
+            Ok(Some(AdminPacket::AdminCommand(p)))
         );
     }
 }
